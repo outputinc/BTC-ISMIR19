@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+env/
+venv/
+.venv/
+
+# PyTorch/ML artifacts
+*.pt
+*.pth
+*.ckpt
+finetuned_models/
+
+# Weights & Biases
+wandb/
+
+# Generated outputs
+*.png
+*.jpg
+*.jpeg
+
+# Logs
+*.log
+logs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Audio files (usually too large for git)
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# Data directories
+data/
+datasets/
