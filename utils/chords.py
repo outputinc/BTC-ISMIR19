@@ -34,17 +34,17 @@ import pandas as pd
 import mir_eval
 
 
-CHORD_DTYPE = [('root', np.int),
-               ('bass', np.int),
-               ('intervals', np.int, (12,)),
-               ('is_major',np.bool)]
+CHORD_DTYPE = [('root', np.int64),
+               ('bass', np.int64),
+               ('intervals', np.int64, (12,)),
+               ('is_major', np.bool_)]
 
-CHORD_ANN_DTYPE = [('start', np.float),
-                   ('end', np.float),
+CHORD_ANN_DTYPE = [('start', np.float64),
+                   ('end', np.float64),
                    ('chord', CHORD_DTYPE)]
 
-NO_CHORD = (-1, -1, np.zeros(12, dtype=np.int), False)
-UNKNOWN_CHORD = (-1, -1, np.ones(12, dtype=np.int) * -1, False)
+NO_CHORD = (-1, -1, np.zeros(12, dtype=np.int64), False)
+UNKNOWN_CHORD = (-1, -1, np.ones(12, dtype=np.int64) * -1, False)
 
 PITCH_CLASS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
@@ -287,7 +287,7 @@ class Chords:
 
         """
         if given_pitch_classes is None:
-            given_pitch_classes = np.zeros(12, dtype=np.int)
+            given_pitch_classes = np.zeros(12, dtype=np.int64)
         for int_def in intervals_str[1:-1].split(','):
             int_def = int_def.strip()
             if int_def[0] == '*':
@@ -320,7 +320,7 @@ class Chords:
         if list_idx != 0:
             ivs = self._shorthands[quality_str[:list_idx]].copy()
         else:
-            ivs = np.zeros(12, dtype=np.int)
+            ivs = np.zeros(12, dtype=np.int64)
 
 
         return self.interval_list(quality_str[list_idx:], ivs)
