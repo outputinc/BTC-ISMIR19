@@ -133,6 +133,84 @@ This document tracks fine-tuning experiments for the BTC (Bi-Directional Transfo
 
 ---
 
+## Experiment 4: Large Vocabulary (170 chords)
+
+**Date:** 2026-02-05
+
+**Motivation:** Test Option A from `PROJECT_STATUS.md` — whether finer-grained chord
+labels (7ths, sus, aug, dim) force the model to learn actual harmony rather than
+segment identity.
+
+**Configuration:**
+- Vocabulary: 170 classes (`--voca True`), teacher = `btc_model_large_voca.pt`
+- Two datasets built with `create_finetuning_dataset.py --voca True`
+- Learning rate: 1e-5, batch size 32, epochs 20 (identical to Experiments 1-3)
+
+**Results:**
+| Run | Dataset | Train / Valid | Output dir | Best Val Acc |
+|-----|---------|---------------|------------|--------------|
+| 4a | `btc_finetuning_large_voca` (slakh) | 89,448 / 18,318 | `finetuned_models/` | **53.78%** (ep 16) |
+| 4b | `btc_finetuning_large_voca_all` (coco+slakh+musdb) | 216,957 / 62,049 | `finetuned_models_all/` | **66.26%** (ep 20) |
+
+**Nominal comparison against matched small-vocabulary runs:**
+| Dataset | Small voca (25) | Large voca (170) | Delta |
+|---------|-----------------|------------------|-------|
+| slakh only, ~89k | 71.36% | 53.78% | -17.6 pts |
+| all, ~217k | 69.89% (ep 13, interrupted) | 66.26% (ep 20) | -3.6 pts |
+
+**These deltas are not interpretable.** See "What Val Accuracy Actually Measures"
+below — the two columns are agreement rates against two *different* teacher models
+(`btc_model.pt` vs `btc_model_large_voca.pt`), each labeling its own dataset. There
+is no shared yardstick. A drop is also expected on difficulty grounds alone: 170-way
+vs 25-way classification, where `C:maj7` and `C:maj` are distinct labels in one
+vocabulary and identical in the other.
+
+**Status: trained but never evaluated.** Neither run has a wandb record (wandb
+logging was not enabled for either), and neither was ever run through
+`evaluate_by_dataset.py` or `evaluate_by_stems.py`. No conclusion was reached about
+whether large vocabulary addresses the pseudo-label problem. Option A in
+`PROJECT_STATUS.md` should still be considered untested.
+
+**Note:** both eval scripts and `gradio_comparison_demo.py` currently fail to load
+these checkpoints — they construct `BTC_model` from the default 25-class config and
+hit a size mismatch on `output_layer.output_projection.weight` ([170, 128] vs
+[25, 128]). The checkpoints now record `large_voca` and `num_chords`, so the fix is
+to read those and set `config.feature['large_voca']` / `config.model['num_chords']`
+before constructing the model.
+
+---
+
+## What Val Accuracy Actually Measures
+
+Worth stating explicitly, because it is easy to misread every number in this file.
+
+The training objective is **frame-wise cross-entropy** (`F.nll_loss` in
+`SoftmaxOutputLayer.loss`, `utils/transformer_modules.py:86-89`). It is *not*
+contrastive — no embedding distances, no positive/negative pairs. `compute_accuracy`
+(`finetune_btc.py:104-113`) is top-1 agreement per frame, masked to non-padded frames.
+
+The labels are **pseudo-labels**: `create_finetuning_dataset.py:459` gives every
+submix of a chunk the same `chord_chunk`, sliced from the pretrained BTC's prediction
+on the **full mix**. No ground truth is involved at any point.
+
+So val accuracy answers: *given a subset of stems, how often does the model reproduce
+what the teacher said about the full mix?* It is a teacher-agreement rate, not chord
+recognition accuracy. Comparing it across experiments is only meaningful when the
+teacher and vocabulary are held fixed.
+
+This also explains the shape of the results. Because all submixes of a chunk share one
+label vector, cross-entropy imposes a "same chunk -> same output" constraint, which the
+model can satisfy by learning segment identity rather than harmony. That is the same
+failure mode documented in `PROJECT_STATUS.md`, arrived at from the loss function
+rather than from the accuracy numbers.
+
+**Known inconsistency:** the loss includes padded frames (`labels.view(-1)` covers all
+108 positions) while accuracy excludes them via `lengths`. At 10s chunks this is
+`int(10*22050/2048)` = 107 real frames out of 108, so ~1% of the training signal is the
+model learning to predict `N` on padding.
+
+---
+
 ## Key Findings
 
 ### 1. Dataset Difficulty

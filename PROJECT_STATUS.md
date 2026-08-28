@@ -1,7 +1,12 @@
 # BTC Chord Recognition - Project Status
 
-**Last Updated:** February 2026
-**Status:** Paused - Blocked on data acquisition and annotation quality
+**Last Updated:** August 2026
+**Status:** Shelved - documented for a clean restart
+
+This direction is not being continued in its current form. The infrastructure and
+findings are recorded here and in `EXPERIMENTS.md`; any pickup should retrain from
+scratch rather than resume from the checkpoints described below. See "Restart Notes"
+at the end of this file.
 
 ---
 
@@ -40,11 +45,15 @@ The finetuning approach uses **pseudo-labels** from BTC inference on mix audio:
 
 ## Potential Solutions for Annotation Quality
 
-### Option A: Large Vocabulary (170 chords vs 25)
+### Option A: Large Vocabulary (170 chords vs 25) - ATTEMPTED, NOT EVALUATED
 - Current: 25 classes (12 major + 12 minor + N)
 - Large vocab: 170 classes (includes 7ths, sus, aug, dim, etc.)
 - More granular labels might force model to learn actual harmony
 - Risk: May just learn finer-grained segment identity
+- **Two runs completed 2026-02-05** (Experiment 4 in `EXPERIMENTS.md`), reaching
+  53.78% and 66.26% teacher-agreement. Neither was ever evaluated, and the numbers
+  are not comparable to the 25-class runs (different teacher, different vocabulary).
+  **The hypothesis remains untested.**
 
 ### Option B: External Chord Prediction (Kord or similar)
 - Use a different chord recognition model to generate labels
@@ -93,6 +102,13 @@ The finetuning approach uses **pseudo-labels** from BTC inference on mix audio:
 | COCO only | 77.07% | Clean synthetic data |
 | COCO + Slakh | 71.36% | Stem-level silence filtering |
 | COCO + Slakh + MUSDB | ~70% | Added real-world complexity |
+| Slakh, large voca (170) | 53.78% | Never evaluated; not comparable to rows above |
+| All, large voca (170) | 66.26% | Never evaluated; not comparable to rows above |
+
+**These are teacher-agreement rates, not chord accuracy.** Labels are the pretrained
+BTC's own predictions on the full mix; there is no ground truth in this pipeline. The
+25-class and 170-class rows were scored against different teacher models and cannot be
+compared. See "What Val Accuracy Actually Measures" in `EXPERIMENTS.md`.
 
 ### Key Finding: Stem Count Correlation
 More stems = higher accuracy (consistent across all experiments):
@@ -106,41 +122,64 @@ This suggests the model relies on harmonic density rather than learning robust s
 
 ## Repository State
 
-### Untracked Files (not committed)
+### Tracked
+`CLAUDE.md`, `EXPERIMENTS.md`, `PROJECT_STATUS.md`, and all pipeline scripts are
+committed to `outputinc/BTC-ISMIR19`.
+
+### Untracked (gitignored)
 ```
-CLAUDE.md                    # Claude Code instructions
-EXPERIMENTS.md               # Experiment tracking
-PROJECT_STATUS.md            # This file
-finetuned_models/            # Checkpoint files
+finetuned_models*/           # Checkpoint files
 wandb/                       # Training logs
 *.pt                         # Embedding files
 *.png                        # Analysis visualizations
 ```
+Checkpoints from Experiment 4 were archived to
+`btc_finetuned_20260828.tar.gz` (both runs plus their `training_history.json`).
 
 ### Key Configuration
 - Model: BTC (8 attention layers, 4 heads, 128 hidden)
 - Input: CQT features (144 bins, 108 timesteps)
-- Output: 25 chord classes (major/minor + N)
+- Output: 25 chord classes (major/minor + N), or 170 with `--voca True`
 - Training: Adam optimizer, lr=1e-5, batch_size=32
 
 ---
 
-## Recommended Next Steps
+## Restart Notes
 
-### Short Term (if resuming)
-1. **Manual MoisesDB download** - Visit music.ai/research in browser
-2. **Test prepare_moisesdb.py** - Verify pipeline works with real data
-3. **Evaluate on held-out test sets** - Beyond validation accuracy
+Read before picking this up again.
 
-### Medium Term (addressing annotation quality)
-1. **Implement contrastive pretraining** - Learn stem-invariant embeddings
-2. **Integrate external ACR** - Kord or Chordino for independent labels
-3. **Obtain licensed datasets** - Contact Isophonics maintainers
+### Do not resume from the existing checkpoints
+They were trained against pseudo-labels with the objective described below. Whatever
+they learned is entangled with that setup. Start training over.
 
-### Long Term (if pursuing this direction)
-1. **Collect ground-truth annotations** - Manual labeling of stem datasets
-2. **Hybrid architecture** - Separate stem encoder + chord decoder
-3. **Multi-task learning** - Joint stem classification + chord recognition
+### Known issues in the current code
+1. **Eval scripts cannot load large-voca checkpoints.** `evaluate_by_dataset.py`,
+   `evaluate_by_stems.py`, and `gradio_comparison_demo.py` build `BTC_model` from the
+   default 25-class config and fail with a size mismatch on
+   `output_layer.output_projection.weight`. The checkpoints record `large_voca` and
+   `num_chords` - read those before constructing the model.
+2. **`test.py` cannot load a finetuned checkpoint at all** - `model_file` is hardcoded
+   to the pretrained paths. It needs a `--checkpoint` argument to serve as an
+   end-to-end audio -> LAB/MIDI demo for finetuned models.
+3. **Loss counts padded frames, accuracy does not.** `labels.view(-1)` in the loss
+   covers all 108 positions while `compute_accuracy` masks via `lengths`. At 10s
+   chunks that is 107 real frames of 108, so ~1% of the training signal is predicting
+   `N` on padding.
+4. **`gradio_comparison_demo.py` has a stale header** claiming "71.92% val acc" for a
+   checkpoint that is actually a 53.78% large-voca model.
+
+### The core problem is unchanged
+The objective is frame-wise cross-entropy against pseudo-labels: predict the full-mix
+chord classes given only a subset of stems. Every submix of a chunk shares one label
+vector, so the objective can be satisfied by learning segment identity rather than
+harmony. No amount of retraining on this setup fixes that. A restart should change the
+labels (ground truth, or an independent ACR) or change the objective (contrastive,
+Option C) - not just rerun with different hyperparameters.
+
+### If evaluating anyway
+Map large-voca predictions down to majmin and score with `utils/mir_eval_modules.py`
+(`root`, `thirds`, `majmin`, `mirex`) so vocabularies share a yardstick. Nothing in
+the repo currently wires that to a finetuned checkpoint.
 
 ---
 
@@ -155,7 +194,7 @@ wandb/                       # Training logs
 
 ## Contact / Handoff Notes
 
-The core challenge is that **finetuning on pseudo-labels teaches segment identity, not chord recognition**. Any continuation should focus on:
+This work is shelved as of August 2026. The core challenge is that **finetuning on pseudo-labels teaches segment identity, not chord recognition**. Any continuation should focus on:
 
 1. Getting better chord annotations (ground truth or better ACR)
 2. Or changing the training objective (contrastive learning)
