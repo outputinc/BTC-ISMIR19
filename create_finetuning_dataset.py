@@ -58,13 +58,19 @@ BINS_PER_OCTAVE = 24
 HOP_LENGTH = 2048
 TIMESTEP = 108  # frames per chunk
 CHUNK_DURATION = 10.0  # seconds
-NUM_CHORDS = 25  # major/minor vocabulary
+NUM_CHORDS_SMALL = 25  # major/minor vocabulary
+NUM_CHORDS_LARGE = 170  # large vocabulary (12 roots × 14 qualities + N + X)
 
 
-def load_btc_model(model_path: str, config_path: str = "run_config.yaml") -> Tuple[BTC_model, np.ndarray, np.ndarray, HParams]:
+def load_btc_model(model_path: str, config_path: str = "run_config.yaml", large_voca: bool = False) -> Tuple[BTC_model, np.ndarray, np.ndarray, HParams]:
     """Load pretrained BTC model and normalization statistics."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     config = load_config(config_path)
+
+    # Update config for large vocabulary
+    if large_voca:
+        config.feature['large_voca'] = True
+        config.model['num_chords'] = NUM_CHORDS_LARGE
 
     model = BTC_model(config=config.model).to(device)
 
@@ -517,11 +523,11 @@ def process_track(
 def process_track_wrapper(args):
     """Wrapper for multiprocessing that loads model per process."""
     (track_path, model_path, config_path, output_dir, split,
-     chunk_duration, submixes_per_chunk, min_stems, max_stems, dataset_type, stem_rms_threshold) = args
+     chunk_duration, submixes_per_chunk, min_stems, max_stems, dataset_type, stem_rms_threshold, large_voca) = args
 
     # Load model in this process
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, mean, std, config = load_btc_model(model_path, config_path)
+    model, mean, std, config = load_btc_model(model_path, config_path, large_voca)
 
     return process_track(
         track_path, model, mean, std, device, output_dir, split,
@@ -565,14 +571,20 @@ def main():
     parser.add_argument(
         "--model_path",
         type=str,
-        default="./test/btc_model.pt",
-        help="Path to pretrained BTC model"
+        default=None,
+        help="Path to pretrained BTC model (auto-selected based on --voca if not specified)"
     )
     parser.add_argument(
         "--config_path",
         type=str,
         default="run_config.yaml",
         help="Path to BTC config file"
+    )
+    parser.add_argument(
+        "--voca",
+        default=False,
+        type=lambda x: (str(x).lower() == 'true'),
+        help="Use large vocabulary (170 classes) instead of major/minor (25 classes)"
     )
     parser.add_argument(
         "--chunk_duration",
@@ -627,12 +639,23 @@ def main():
     (output_dir / "train").mkdir(parents=True, exist_ok=True)
     (output_dir / "valid").mkdir(parents=True, exist_ok=True)
 
+    # Select model path based on vocabulary size
+    if args.model_path is None:
+        if args.voca:
+            args.model_path = "./test/btc_model_large_voca.pt"
+        else:
+            args.model_path = "./test/btc_model.pt"
+
+    # Determine number of chord classes
+    num_chords = NUM_CHORDS_LARGE if args.voca else NUM_CHORDS_SMALL
+    print(f"Using {'large' if args.voca else 'small'} vocabulary: {num_chords} chord classes")
+
     # Load model once for single-process mode
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    model, mean, std, config = load_btc_model(args.model_path, args.config_path)
-    print("BTC model loaded successfully")
+    model, mean, std, config = load_btc_model(args.model_path, args.config_path, args.voca)
+    print(f"BTC model loaded from {args.model_path}")
 
     # Process each split
     manifest = {
@@ -644,7 +667,8 @@ def main():
             "target_sr": TARGET_SR,
             "n_bins": N_BINS,
             "hop_length": HOP_LENGTH,
-            "num_chords": NUM_CHORDS,
+            "num_chords": num_chords,
+            "large_voca": args.voca,
             "datasets": args.dataset,
             "stem_rms_threshold": args.stem_rms_threshold,
         },
@@ -711,7 +735,7 @@ def main():
             tasks = [
                 (track_path, args.model_path, args.config_path, output_dir, output_split,
                  args.chunk_duration, args.submixes_per_chunk,
-                 args.min_stems, args.max_stems, dataset_type, args.stem_rms_threshold)
+                 args.min_stems, args.max_stems, dataset_type, args.stem_rms_threshold, args.voca)
                 for track_path, dataset_type in track_info
             ]
 

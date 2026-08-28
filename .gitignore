@@ -50,3 +50,5 @@ Thumbs.db
 # Data directories
 data/
 datasets/
+finetuned_models_all/
+finetuned_models_*/

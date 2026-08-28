@@ -28,6 +28,10 @@ except ImportError:
 from btc_model import BTC_model
 from utils.hparams import HParams
 
+# Vocabulary sizes
+NUM_CHORDS_SMALL = 25  # major/minor vocabulary, N=24
+NUM_CHORDS_LARGE = 170  # large vocabulary, N=169
+
 
 def load_config(config_path: str) -> HParams:
     """Load config with proper yaml loader."""
@@ -60,37 +64,41 @@ class FinetuneDataset(Dataset):
 TIMESTEP = 108  # BTC model expects exactly 108 frames per sequence
 
 
-def collate_fn(batch):
-    """Collate function that pads to TIMESTEP frames (108)."""
-    batch_size = len(batch)
+def make_collate_fn(no_chord_idx: int):
+    """Create a collate function with the appropriate no-chord index for padding."""
+    def collate_fn(batch):
+        """Collate function that pads to TIMESTEP frames (108)."""
+        batch_size = len(batch)
 
-    features = []
-    chords = []
-    lengths = []
+        features = []
+        chords = []
+        lengths = []
 
-    for b in batch:
-        feat = b['feature']  # [144, T]
-        chord = b['chord']   # [T]
-        seq_len = feat.shape[1]
-        lengths.append(min(seq_len, TIMESTEP))
+        for b in batch:
+            feat = b['feature']  # [144, T]
+            chord = b['chord']   # [T]
+            seq_len = feat.shape[1]
+            lengths.append(min(seq_len, TIMESTEP))
 
-        # Pad or truncate to TIMESTEP
-        if seq_len < TIMESTEP:
-            feat = np.pad(feat, ((0, 0), (0, TIMESTEP - seq_len)), mode='constant')
-            chord = np.pad(chord, (0, TIMESTEP - seq_len), mode='constant', constant_values=24)  # 24 = 'N' (no chord)
-        elif seq_len > TIMESTEP:
-            feat = feat[:, :TIMESTEP]
-            chord = chord[:TIMESTEP]
+            # Pad or truncate to TIMESTEP
+            if seq_len < TIMESTEP:
+                feat = np.pad(feat, ((0, 0), (0, TIMESTEP - seq_len)), mode='constant')
+                chord = np.pad(chord, (0, TIMESTEP - seq_len), mode='constant', constant_values=no_chord_idx)
+            elif seq_len > TIMESTEP:
+                feat = feat[:, :TIMESTEP]
+                chord = chord[:TIMESTEP]
 
-        features.append(feat)
-        chords.append(chord)
+            features.append(feat)
+            chords.append(chord)
 
-    # Stack into tensors
-    features = torch.tensor(np.stack(features), dtype=torch.float32)  # [B, 144, TIMESTEP]
-    chords = torch.tensor(np.stack(chords), dtype=torch.int64)        # [B, TIMESTEP]
-    lengths = torch.tensor(lengths, dtype=torch.int64)
+        # Stack into tensors
+        features = torch.tensor(np.stack(features), dtype=torch.float32)  # [B, 144, TIMESTEP]
+        chords = torch.tensor(np.stack(chords), dtype=torch.int64)        # [B, TIMESTEP]
+        lengths = torch.tensor(lengths, dtype=torch.int64)
 
-    return features, chords, lengths
+        return features, chords, lengths
+
+    return collate_fn
 
 
 def compute_accuracy(predictions, labels, lengths):
@@ -198,14 +206,20 @@ def main():
     parser.add_argument(
         "--model_path",
         type=str,
-        default="./test/btc_model.pt",
-        help="Path to pretrained BTC model"
+        default=None,
+        help="Path to pretrained BTC model (auto-selected based on --voca if not specified)"
     )
     parser.add_argument(
         "--config_path",
         type=str,
         default="run_config.yaml",
         help="Path to config file"
+    )
+    parser.add_argument(
+        "--voca",
+        default=False,
+        type=lambda x: (str(x).lower() == 'true'),
+        help="Use large vocabulary (170 classes) instead of major/minor (25 classes)"
     )
     parser.add_argument(
         "--output_dir",
@@ -270,8 +284,30 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    # Select model path based on vocabulary size
+    if args.model_path is None:
+        if args.voca:
+            args.model_path = "./test/btc_model_large_voca.pt"
+        else:
+            args.model_path = "./test/btc_model.pt"
+
+    # Determine vocabulary settings
+    if args.voca:
+        num_chords = NUM_CHORDS_LARGE
+        no_chord_idx = 169  # 'N' in large vocabulary
+        print("Using large vocabulary: 170 chord classes")
+    else:
+        num_chords = NUM_CHORDS_SMALL
+        no_chord_idx = 24  # 'N' in small vocabulary
+        print("Using small vocabulary: 25 chord classes (major/minor)")
+
     # Load config
     config = load_config(args.config_path)
+
+    # Update config for vocabulary size
+    if args.voca:
+        config.feature['large_voca'] = True
+        config.model['num_chords'] = num_chords
     print("Config loaded")
 
     # Load pretrained model
@@ -286,6 +322,9 @@ def main():
     # Create datasets and dataloaders
     train_dataset = FinetuneDataset(args.data_dir, split='train')
     valid_dataset = FinetuneDataset(args.data_dir, split='valid')
+
+    # Create collate function with appropriate no-chord index
+    collate_fn = make_collate_fn(no_chord_idx)
 
     train_loader = DataLoader(
         train_dataset,
@@ -344,6 +383,8 @@ def main():
                 "data_dir": args.data_dir,
                 "train_examples": len(train_dataset),
                 "valid_examples": len(valid_dataset),
+                "large_voca": args.voca,
+                "num_chords": num_chords,
                 **dataset_config
             }
         )
@@ -361,6 +402,7 @@ def main():
     }
 
     print(f"\nStarting finetuning for {args.epochs} epochs...")
+    print(f"Vocabulary: {'large (170 chords)' if args.voca else 'small (25 chords, major/minor)'}")
     print(f"Train examples: {len(train_dataset)}")
     print(f"Valid examples: {len(valid_dataset)}")
     print(f"Batch size: {args.batch_size}")
@@ -409,6 +451,8 @@ def main():
                 'epoch': epoch,
                 'val_acc': val_acc,
                 'config': config.model,
+                'large_voca': args.voca,
+                'num_chords': num_chords,
             }, save_path)
             print(f"New best model saved to {save_path} (val_acc: {val_acc:.4f})")
 
@@ -422,6 +466,8 @@ def main():
                 'epoch': epoch,
                 'val_acc': val_acc,
                 'config': config.model,
+                'large_voca': args.voca,
+                'num_chords': num_chords,
             }, save_path)
             print(f"Checkpoint saved to {save_path}")
 
@@ -434,6 +480,8 @@ def main():
         'epoch': args.epochs,
         'val_acc': val_acc,
         'config': config.model,
+        'large_voca': args.voca,
+        'num_chords': num_chords,
     }, save_path)
     print(f"\nFinal model saved to {save_path}")
 
@@ -454,10 +502,11 @@ def main():
         wandb.summary["final_val_loss"] = history['val_loss'][-1]
 
         # Save best model as artifact
+        voca_str = "large_voca" if args.voca else "majmin"
         artifact = wandb.Artifact(
-            name="btc-finetuned-model",
+            name=f"btc-finetuned-{voca_str}",
             type="model",
-            description=f"BTC model finetuned on submix data, best val_acc={best_val_acc:.4f}"
+            description=f"BTC model ({num_chords} chords) finetuned on submix data, best val_acc={best_val_acc:.4f}"
         )
         artifact.add_file(str(output_dir / "btc_finetuned_best.pt"))
         wandb.log_artifact(artifact)
